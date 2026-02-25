@@ -1,0 +1,30 @@
+{
+  "name": "pi-searxng",
+  "version": "1.0.0",
+  "description": "SearXNG web search extension for Pi with automatic GitHub repo cloning",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "searxng", "web-search", "github"],
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "searxng.ts",
+    "config.ts",
+    "extract.ts",
+    "github.ts",
+    "package.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "linkedom": "^0.16.0",
+    "turndown": "^7.2.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
