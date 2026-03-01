@@ -31,6 +31,8 @@ export interface ClonedRepo {
 }
 
 export function isGitHubUrl(url: string): boolean {
+  // Exclude gist.github.com - let it fall through to regular content fetching
+  if (url.includes("gist.github.com")) return false;
   return url.includes("github.com") &&
     /github\.com\/[^/]+\/[^/]+/.test(url);
 }
