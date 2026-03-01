@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2025-03-01
+
 ### Fixed
 - GitHub blob and tree URLs now clone correctly. Previously, URLs like `github.com/owner/repo/blob/main/file.md` would fail because the full URL was passed to `git clone`. Now the URL is parsed to extract the owner, repo, and branch, and a clean clone URL is constructed.
 
