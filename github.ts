@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
+import { LRUCache } from "lru-cache";
 
 const CLONE_TIMEOUT = 60000;
 const LS_REMOTE_TIMEOUT = 15000;
@@ -9,8 +10,6 @@ const RAW_FETCH_TIMEOUT = 15000;
 const API_TIMEOUT = 15000;
 const MAX_RAW_SIZE = 5 * 1024 * 1024;
 const MAX_FILES = 100;
-const CLONE_CACHE_TTL = 30 * 60_000;
-const CLONE_CACHE_MAX = 8;
 const GITHUB_API = "https://api.github.com";
 
 const BINARY_EXTS = new Set([
@@ -34,7 +33,6 @@ export interface ClonedRepo {
 type CloneCacheEntry = {
   tmpDir: string;
   repo: ClonedRepo;
-  ts: number;
 };
 
 export interface RawFile {
@@ -53,7 +51,13 @@ export interface GitHubUrlInfo {
   refPathSegments?: string[];
 }
 
-const cloneCache = new Map<string, CloneCacheEntry>();
+const cloneCache = new LRUCache<string, CloneCacheEntry>({
+  max: 8,
+  ttl: 30 * 60_000,
+  dispose: entry => {
+    rmSync(entry.tmpDir, { recursive: true, force: true });
+  }
+});
 
 export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
   try {
@@ -223,50 +227,25 @@ function getCloneCacheKey(info: GitHubUrlInfo): string {
   return `${info.owner}/${info.repo}@${info.ref || "HEAD"}`;
 }
 
-function removeCloneCacheEntry(key: string, entry: CloneCacheEntry): void {
-  cloneCache.delete(key);
-  rmSync(entry.tmpDir, { recursive: true, force: true });
-}
-
-function pruneCloneCache(): void {
-  const now = Date.now();
-
-  for (const [key, entry] of cloneCache.entries()) {
-    try {
-      if (now - entry.ts <= CLONE_CACHE_TTL && statSync(entry.repo.localPath).isDirectory()) {
-        continue;
-      }
-    } catch {}
-
-    removeCloneCacheEntry(key, entry);
-  }
-
-  while (cloneCache.size > CLONE_CACHE_MAX) {
-    const oldest = [...cloneCache.entries()].reduce((min, current) => current[1].ts < min[1].ts ? current : min);
-    removeCloneCacheEntry(oldest[0], oldest[1]);
-  }
-}
-
 function getCachedClone(info: GitHubUrlInfo): ClonedRepo | null {
-  pruneCloneCache();
-
   const entry = cloneCache.get(getCloneCacheKey(info));
   if (!entry) return null;
 
-  entry.ts = Date.now();
+  try {
+    if (!statSync(entry.repo.localPath).isDirectory()) {
+      cloneCache.delete(getCloneCacheKey(info));
+      return null;
+    }
+  } catch {
+    cloneCache.delete(getCloneCacheKey(info));
+    return null;
+  }
+
   return entry.repo;
 }
 
 function setCachedClone(info: GitHubUrlInfo, tmpDir: string, repo: ClonedRepo): void {
-  pruneCloneCache();
-
-  cloneCache.set(getCloneCacheKey(info), {
-    tmpDir,
-    repo,
-    ts: Date.now()
-  });
-
-  pruneCloneCache();
+  cloneCache.set(getCloneCacheKey(info), { tmpDir, repo });
 }
 
 async function fetchRawFileAt(info: GitHubUrlInfo): Promise<RawFile | null> {
@@ -282,12 +261,9 @@ async function fetchRawFileAt(info: GitHubUrlInfo): Promise<RawFile | null> {
     };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RAW_FETCH_TIMEOUT);
-
   try {
     const res = await fetch(rawUrl, {
-      signal: controller.signal,
+      signal: AbortSignal.timeout(RAW_FETCH_TIMEOUT),
       headers: { "User-Agent": "pi-searxng/1.0" }
     });
 
@@ -329,8 +305,6 @@ async function fetchRawFileAt(info: GitHubUrlInfo): Promise<RawFile | null> {
       url: rawUrl,
       error: err instanceof Error ? err.message : String(err)
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -415,9 +389,6 @@ export interface RepoOverview {
 }
 
 async function githubApi<T>(path: string, opts: { raw?: boolean } = {}): Promise<T | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
-
   const headers: Record<string, string> = {
     "User-Agent": "pi-searxng/1.0",
     "Accept": opts.raw ? "application/vnd.github.raw" : "application/vnd.github+json",
@@ -427,13 +398,14 @@ async function githubApi<T>(path: string, opts: { raw?: boolean } = {}): Promise
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   try {
-    const res = await fetch(`${GITHUB_API}${path}`, { signal: controller.signal, headers });
+    const res = await fetch(`${GITHUB_API}${path}`, {
+      signal: AbortSignal.timeout(API_TIMEOUT),
+      headers
+    });
     if (!res.ok) return null;
     return opts.raw ? ((await res.text()) as any) : await res.json();
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

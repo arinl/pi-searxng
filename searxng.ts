@@ -45,40 +45,32 @@ export async function search(query: string, opts: SearchOptions = {}): Promise<S
     url.searchParams.set("engines", opts.engines);
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-
-  try {
-    const res = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": "pi-searxng/1.0"
-      }
-    });
-
-    if (!res.ok) throw new Error(`SearXNG returned ${res.status}`);
-
-    const data = await res.json();
-
-    // Deduplicate by URL before slicing
-    const seen = new Set<string>();
-    const results: SearchResult[] = [];
-    for (const r of data.results || []) {
-      if (results.length >= (opts.limit || config.maxResults)) break;
-      if (seen.has(r.url)) continue;
-      seen.add(r.url);
-      results.push({
-        title: r.title || "Untitled",
-        url: r.url,
-        snippet: r.content || r.abstract || "",
-        score: r.score || 0,
-        publishedDate: r.publishedDate || undefined
-      });
+  const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(config.timeoutMs),
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": "pi-searxng/1.0"
     }
+  });
 
-    return { results };
-  } finally {
-    clearTimeout(timeout);
+  if (!res.ok) throw new Error(`SearXNG returned ${res.status}`);
+
+  const data = await res.json();
+
+  const seen = new Set<string>();
+  const results: SearchResult[] = [];
+  for (const r of data.results || []) {
+    if (results.length >= (opts.limit || config.maxResults)) break;
+    if (seen.has(r.url)) continue;
+    seen.add(r.url);
+    results.push({
+      title: r.title || "Untitled",
+      url: r.url,
+      snippet: r.content || r.abstract || "",
+      score: r.score || 0,
+      publishedDate: r.publishedDate || undefined
+    });
   }
+
+  return { results };
 }

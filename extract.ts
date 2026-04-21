@@ -1,5 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
 
 const turndown = new TurndownService({
@@ -9,41 +10,21 @@ const turndown = new TurndownService({
 
 const DEFAULT_TIMEOUT = 30000;
 const MAX_SIZE = 5 * 1024 * 1024;
-const CACHE_TTL = 60_000;
-const CACHE_MAX = 50;
+
 type CacheMode = "full" | "headings";
 type CachePayload = Partial<Record<CacheMode, ExtractedContent>>;
-type CacheEntry = CachePayload & { ts: number };
 
-const urlCache = new Map<string, CacheEntry>();
-
-function getCacheEntry(url: string): CacheEntry | null {
-  const entry = urlCache.get(url);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL) {
-    urlCache.delete(url);
-    return null;
-  }
-  return entry;
-}
+const urlCache = new LRUCache<string, CachePayload>({
+  max: 50,
+  ttl: 60_000
+});
 
 function getCached(url: string, mode: CacheMode): ExtractedContent | null {
-  return getCacheEntry(url)?.[mode] || null;
+  return urlCache.get(url)?.[mode] || null;
 }
 
 function setCache(url: string, payload: CachePayload): void {
-  const existing = getCacheEntry(url);
-
-  if (!existing && urlCache.size >= CACHE_MAX) {
-    const oldest = urlCache.keys().next().value!;
-    urlCache.delete(oldest);
-  }
-
-  urlCache.set(url, {
-    ...(existing || {}),
-    ...payload,
-    ts: Date.now()
-  });
+  urlCache.set(url, { ...(urlCache.get(url) || {}), ...payload });
 }
 
 function isTextLikeContentType(contentType: string): boolean {
@@ -133,12 +114,9 @@ export async function fetchContent(url: string, opts: FetchOptions = {}): Promis
   const cached = getCached(url, mode);
   if (cached) return cached;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-
   try {
     const res = await fetch(url, {
-      signal: controller.signal,
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT),
       headers: {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -217,7 +195,5 @@ export async function fetchContent(url: string, opts: FetchOptions = {}): Promis
       content: "",
       error: err instanceof Error ? err.message : String(err)
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
