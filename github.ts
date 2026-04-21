@@ -6,10 +6,12 @@ import { join, extname } from "node:path";
 const CLONE_TIMEOUT = 60000;
 const LS_REMOTE_TIMEOUT = 15000;
 const RAW_FETCH_TIMEOUT = 15000;
+const API_TIMEOUT = 15000;
 const MAX_RAW_SIZE = 5 * 1024 * 1024;
 const MAX_FILES = 100;
 const CLONE_CACHE_TTL = 30 * 60_000;
 const CLONE_CACHE_MAX = 8;
+const GITHUB_API = "https://api.github.com";
 
 const BINARY_EXTS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
@@ -383,6 +385,109 @@ export async function cloneRepo(info: GitHubUrlInfo): Promise<ClonedRepo | null>
   if (isSameRefTarget(resolved, info)) return initial;
 
   return await cloneRepoAt(resolved);
+}
+
+export interface RepoMetadata {
+  name: string;
+  fullName: string;
+  description: string | null;
+  defaultBranch: string;
+  stars: number;
+  language: string | null;
+  topics: string[];
+  license: string | null;
+  homepage: string | null;
+  url: string;
+}
+
+export interface TreeEntry {
+  path: string;
+  name: string;
+  type: "file" | "dir";
+  size?: number;
+}
+
+export interface RepoOverview {
+  metadata: RepoMetadata;
+  readme: string | null;
+  entries: TreeEntry[];
+  ref: string;
+}
+
+async function githubApi<T>(path: string, opts: { raw?: boolean } = {}): Promise<T | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT);
+
+  const headers: Record<string, string> = {
+    "User-Agent": "pi-searxng/1.0",
+    "Accept": opts.raw ? "application/vnd.github.raw" : "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  const token = process.env.GITHUB_TOKEN;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${GITHUB_API}${path}`, { signal: controller.signal, headers });
+    if (!res.ok) return null;
+    return opts.raw ? ((await res.text()) as any) : await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function fetchRepoMetadata(info: GitHubUrlInfo): Promise<RepoMetadata | null> {
+  const data = await githubApi<any>(`/repos/${info.owner}/${info.repo}`);
+  if (!data) return null;
+  return {
+    name: data.name,
+    fullName: data.full_name,
+    description: data.description,
+    defaultBranch: data.default_branch,
+    stars: data.stargazers_count || 0,
+    language: data.language,
+    topics: data.topics || [],
+    license: data.license?.spdx_id || null,
+    homepage: data.homepage || null,
+    url: data.html_url
+  };
+}
+
+export async function fetchReadme(info: GitHubUrlInfo, ref?: string): Promise<string | null> {
+  const path = `/repos/${info.owner}/${info.repo}/readme${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+  return await githubApi<string>(path, { raw: true });
+}
+
+export async function fetchTreeContents(info: GitHubUrlInfo, subPath: string = "", ref?: string): Promise<TreeEntry[] | null> {
+  const clean = subPath.replace(/^\/+|\/+$/g, "");
+  const path = `/repos/${info.owner}/${info.repo}/contents/${clean}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+  const data = await githubApi<any>(path);
+  if (!Array.isArray(data)) return null;
+  return data.map((item: any) => ({
+    path: item.path,
+    name: item.name,
+    type: item.type === "dir" ? "dir" : "file",
+    size: item.size
+  }));
+}
+
+export async function describeRepo(info: GitHubUrlInfo): Promise<RepoOverview | null> {
+  const metadata = await fetchRepoMetadata(info);
+  if (!metadata) return null;
+
+  const ref = info.ref || metadata.defaultBranch;
+  const [readme, entries] = await Promise.all([
+    fetchReadme(info, ref),
+    fetchTreeContents(info, "", ref)
+  ]);
+
+  return {
+    metadata,
+    readme,
+    entries: entries || [],
+    ref
+  };
 }
 
 function collectPaths(dir: string, baseDir: string, paths: string[] = []): string[] {
