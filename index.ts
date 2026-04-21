@@ -13,9 +13,10 @@ function generateId(): string {
 
 function formatSearchResults(results: any[]): string {
   if (results.length === 0) return "No results found.";
-  return results.map((r, i) => 
-    `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet.slice(0, 200)}${r.snippet.length > 200 ? "..." : ""}`
-  ).join("\n\n");
+  return results.map((r, i) => {
+    const score = r.score ? ` (${r.score.toFixed(2)})` : "";
+    return `${i + 1}. **${r.title}**${score}\n   ${r.url}\n   ${r.snippet.slice(0, 200)}${r.snippet.length > 200 ? "..." : ""}`;
+  }).join("\n\n");
 }
 
 function formatRepoFiles(files: any[]): string {
@@ -27,19 +28,31 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
-    description: "Search the web using SearXNG",
+    description: "Search the web using SearXNG. Supports time filtering, pagination, and language selection.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
-      limit: Type.Optional(Type.Number({ description: "Max results", default: 10 }))
+      limit: Type.Optional(Type.Number({ description: "Max results", default: 10 })),
+      pageno: Type.Optional(Type.Number({ description: "Page number (starts at 1)", default: 1 })),
+      time_range: Type.Optional(Type.Union([
+        Type.Literal("day"),
+        Type.Literal("month"),
+        Type.Literal("year")
+      ], { description: "Filter results by time range" })),
+      language: Type.Optional(Type.String({ description: "Language code (e.g. 'en', 'fr'). Default: all" }))
     }),
-    
+
     async execute(_id, params, signal) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Aborted" }] };
       }
-      
+
       try {
-        const { results } = await search(params.query, params.limit);
+        const { results } = await search(params.query, {
+          limit: params.limit,
+          pageno: params.pageno,
+          time_range: params.time_range,
+          language: params.language
+        });
         const searchId = generateId();
         searchCache.set(searchId, { query: params.query, results });
         
@@ -70,11 +83,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "fetch_content",
     label: "Fetch Content",
-    description: "Fetch URL content. Automatically clones GitHub repos.",
+    description: "Fetch URL content as markdown. Automatically clones GitHub repos. Use headingsOnly to scout a page before fetching full content.",
     parameters: Type.Object({
-      url: Type.String({ description: "URL to fetch" })
+      url: Type.String({ description: "URL to fetch" }),
+      headingsOnly: Type.Optional(Type.Boolean({ description: "Return only headings (useful for scouting long pages)", default: false }))
     }),
-    
+
     async execute(_id, params, signal) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Aborted" }] };
@@ -102,7 +116,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const result = await fetchContent(params.url);
+      const result = await fetchContent(params.url, { headingsOnly: params.headingsOnly });
       
       if (result.error) {
         return {
