@@ -10,8 +10,8 @@ const turndown = new TurndownService({
 const DEFAULT_TIMEOUT = 30000;
 const MAX_SIZE = 5 * 1024 * 1024;
 const CACHE_TTL = 60_000;
+const CACHE_MAX = 50;
 
-// ── URL cache ──────────────────────────────────────────
 const urlCache = new Map<string, { content: ExtractedContent; ts: number }>();
 
 function getCached(url: string): ExtractedContent | null {
@@ -25,16 +25,18 @@ function getCached(url: string): ExtractedContent | null {
 }
 
 function setCache(url: string, content: ExtractedContent): void {
+  if (urlCache.size >= CACHE_MAX) {
+    const oldest = urlCache.keys().next().value!;
+    urlCache.delete(oldest);
+  }
   urlCache.set(url, { content, ts: Date.now() });
 }
 
-// ── Headings extraction ────────────────────────────────
 export function extractHeadings(markdown: string): string {
   const headings = markdown.split("\n").filter(l => /^#{1,6}\s/.test(l));
   return headings.length > 0 ? headings.join("\n") : "No headings found.";
 }
 
-// ── Types ──────────────────────────────────────────────
 export interface ExtractedContent {
   url: string;
   title: string;
@@ -46,7 +48,14 @@ export interface FetchOptions {
   headingsOnly?: boolean;
 }
 
-// ── Main fetch ─────────────────────────────────────────
+function finalize(extracted: ExtractedContent, opts: FetchOptions): ExtractedContent {
+  setCache(extracted.url, extracted);
+  if (opts.headingsOnly) {
+    return { ...extracted, content: extractHeadings(extracted.content) };
+  }
+  return extracted;
+}
+
 export async function fetchContent(url: string, opts: FetchOptions = {}): Promise<ExtractedContent> {
   const cached = getCached(url);
   if (cached) {
@@ -80,26 +89,14 @@ export async function fetchContent(url: string, opts: FetchOptions = {}): Promis
     const contentType = res.headers.get("content-type") || "";
     const body = await res.text();
 
-    // Handle non-HTML content types directly
     if (contentType.includes("application/json")) {
-      const extracted: ExtractedContent = {
-        url,
-        title: url,
-        content: "```json\n" + body + "\n```"
-      };
-      setCache(url, extracted);
-      if (opts.headingsOnly) return { ...extracted, content: "No headings (JSON content)." };
-      return extracted;
+      return finalize({ url, title: url, content: "```json\n" + body + "\n```" }, opts);
     }
 
     if (contentType.includes("text/plain")) {
-      const extracted: ExtractedContent = { url, title: url, content: body };
-      setCache(url, extracted);
-      if (opts.headingsOnly) return { ...extracted, content: extractHeadings(body) };
-      return extracted;
+      return finalize({ url, title: url, content: body }, opts);
     }
 
-    // HTML: try Readability first, fall back to raw Turndown
     const { document } = parseHTML(body);
     const reader = new Readability(document);
     const article = reader.parse();
@@ -114,14 +111,7 @@ export async function fetchContent(url: string, opts: FetchOptions = {}): Promis
       markdown = turndown.turndown(body);
     }
 
-    const extracted: ExtractedContent = { url, title, content: markdown };
-
-    setCache(url, extracted);
-
-    if (opts.headingsOnly) {
-      return { ...extracted, content: extractHeadings(extracted.content) };
-    }
-    return extracted;
+    return finalize({ url, title, content: markdown }, opts);
   } catch (err) {
     return {
       url,

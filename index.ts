@@ -3,12 +3,20 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { search } from "./searxng.js";
 import { fetchContent } from "./extract.js";
-import { isGitHubUrl, isGitHubBlobUrl, fetchRawFile, cloneRepo } from "./github.js";
+import { isGitHubUrl, parseGitHubUrl, fetchRawFile, cloneRepo } from "./github.js";
+
+const SEARCH_CACHE_MAX = 20;
+const TRUNCATE_LIMIT = 30000;
 
 const searchCache = new Map<string, { query: string; results: any[] }>();
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function truncate(text: string, max = TRUNCATE_LIMIT): { text: string; truncated: boolean } {
+  if (text.length <= max) return { text, truncated: false };
+  return { text: text.slice(0, max) + "\n\n[Content truncated...]", truncated: true };
 }
 
 function formatSearchResults(results: any[]): string {
@@ -20,8 +28,8 @@ function formatSearchResults(results: any[]): string {
   }).join("\n\n");
 }
 
-function formatRepoFiles(files: any[]): string {
-  return files.slice(0, 30).map(f => `- ${f.path}`).join("\n") + 
+function formatRepoFiles(files: string[]): string {
+  return files.slice(0, 30).map(f => `- ${f}`).join("\n") +
     (files.length > 30 ? `\n... and ${files.length - 30} more files` : "");
 }
 
@@ -50,17 +58,15 @@ export default function (pi: ExtensionAPI) {
       }
 
       try {
-        const { results } = await search(params.query, {
-          limit: params.limit,
-          pageno: params.pageno,
-          time_range: params.time_range,
-          language: params.language,
-          categories: params.categories,
-          engines: params.engines
-        });
+        const { results } = await search(params.query, params);
         const searchId = generateId();
+
+        if (searchCache.size >= SEARCH_CACHE_MAX) {
+          const oldest = searchCache.keys().next().value!;
+          searchCache.delete(oldest);
+        }
         searchCache.set(searchId, { query: params.query, results });
-        
+
         return {
           content: [{ type: "text", text: formatSearchResults(results) }],
           details: { searchId, resultCount: results.length, query: params.query }
@@ -72,13 +78,13 @@ export default function (pi: ExtensionAPI) {
         };
       }
     },
-    
+
     renderCall(args, theme) {
       const q = (args as any).query || "";
       const display = q.length > 50 ? q.slice(0, 47) + "..." : q;
       return new Text(theme.fg("toolTitle", "search ") + theme.fg("accent", `"${display}"`), 0, 0);
     },
-    
+
     renderResult(result, _opts, theme) {
       const count = (result.details as any)?.resultCount || 0;
       return new Text(theme.fg("success", `${count} results`), 0, 0);
@@ -99,8 +105,10 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Aborted" }] };
       }
 
-      if (isGitHubBlobUrl(params.url)) {
-        const file = await fetchRawFile(params.url);
+      const ghInfo = isGitHubUrl(params.url) ? parseGitHubUrl(params.url) : null;
+
+      if (ghInfo?.type === "blob" && ghInfo.filePath) {
+        const file = await fetchRawFile(ghInfo);
         if (!file) {
           return {
             content: [{ type: "text", text: "Failed to fetch file from GitHub" }],
@@ -108,19 +116,15 @@ export default function (pi: ExtensionAPI) {
           };
         }
 
-        const truncated = file.content.length > 30000;
-        const content = truncated
-          ? file.content.slice(0, 30000) + "\n\n[Content truncated...]"
-          : file.content;
-
+        const { text, truncated } = truncate(file.content);
         return {
-          content: [{ type: "text", text: `## ${file.path}\n\n\`\`\`\n${content}\n\`\`\`` }],
+          content: [{ type: "text", text: `## ${file.path}\n\n\`\`\`\n${text}\n\`\`\`` }],
           details: { path: file.path, length: file.content.length, truncated }
         };
       }
 
-      if (isGitHubUrl(params.url)) {
-        const repo = await cloneRepo(params.url);
+      if (ghInfo) {
+        const repo = await cloneRepo(ghInfo);
 
         if (!repo) {
           return {
@@ -136,43 +140,41 @@ export default function (pi: ExtensionAPI) {
           details: {
             localPath: repo.localPath,
             fileCount: repo.files.length,
-            files: repo.files.slice(0, 10).map(f => f.path)
+            files: repo.files.slice(0, 10)
           }
         };
       }
 
       const result = await fetchContent(params.url, { headingsOnly: params.headingsOnly });
-      
+
       if (result.error) {
         return {
           content: [{ type: "text", text: `Error: ${result.error}` }],
           details: { error: result.error }
         };
       }
-      
-      const truncated = result.content.length > 30000;
-      const content = truncated 
-        ? result.content.slice(0, 30000) + "\n\n[Content truncated...]"
-        : result.content;
-      
+
+      const { text, truncated } = truncate(result.content);
+
       return {
-        content: [{ type: "text", text: content }],
-        details: { 
-          title: result.title, 
-          url: result.url, 
+        content: [{ type: "text", text }],
+        details: {
+          title: result.title,
+          url: result.url,
           truncated,
-          length: result.content.length 
+          length: result.content.length
         }
       };
     },
-    
+
     renderCall(args, theme) {
       const url = (args as any).url || "";
-      const isBlob = isGitHubBlobUrl(url);
-      const isGH = !isBlob && isGitHubUrl(url);
+      const ghInfo = isGitHubUrl(url) ? parseGitHubUrl(url) : null;
+      const isBlob = ghInfo?.type === "blob" && ghInfo.filePath;
+      const isRepo = ghInfo && !isBlob;
       const display = url.length > 50 ? url.slice(0, 47) + "..." : url;
-      const prefix = isBlob ? "raw " : isGH ? "clone " : "fetch ";
-      const color = isGH || isBlob ? "warning" : "accent";
+      const prefix = isBlob ? "raw " : isRepo ? "clone " : "fetch ";
+      const color = ghInfo ? "warning" : "accent";
       return new Text(theme.fg("toolTitle", prefix) + theme.fg(color, display), 0, 0);
     },
 
@@ -196,7 +198,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       searchId: Type.String()
     }),
-    
+
     async execute(_id, params) {
       const cached = searchCache.get(params.searchId);
       if (!cached) {

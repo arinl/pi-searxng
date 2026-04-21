@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -10,19 +10,23 @@ export interface Config {
   maxResults: number;
 }
 
+let cached: Config | null = null;
+
 export function loadConfig(): Config {
+  if (cached) return cached;
+
   const defaults: Config = {
     searxngUrl: process.env.SEARXNG_URL || "http://localhost:8080",
     timeoutMs: 30000,
     maxResults: 10
   };
-  
+
   try {
-    if (existsSync(CONFIG_PATH)) {
-      const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-      return { ...defaults, ...raw };
-    }
-  } catch {}
-  
-  return defaults;
+    const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    cached = { ...defaults, ...raw };
+  } catch {
+    cached = defaults;
+  }
+
+  return cached;
 }
