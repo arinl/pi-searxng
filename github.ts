@@ -51,6 +51,12 @@ export interface GitHubUrlInfo {
   refPathSegments?: string[];
 }
 
+export interface GitHubApiResult<T> {
+  data: T | null;
+  error?: string;
+  status?: number;
+}
+
 const cloneCache = new LRUCache<string, CloneCacheEntry>({
   max: 8,
   ttl: 30 * 60_000,
@@ -162,6 +168,11 @@ async function resolveGitHubRef(info: GitHubUrlInfo): Promise<GitHubUrlInfo> {
   const refs = await listRemoteRefs(info);
   const match = candidates.find(candidate => refs.has(candidate.ref));
   return match ? { ...info, ...match } : info;
+}
+
+export async function resolveGitHubInfo(info: GitHubUrlInfo): Promise<GitHubUrlInfo> {
+  if (!isAmbiguousGitHubRef(info)) return info;
+  return await resolveGitHubRef(info);
 }
 
 function isBinaryContentType(contentType: string): boolean {
@@ -312,7 +323,7 @@ export async function fetchRawFile(info: GitHubUrlInfo): Promise<RawFile | null>
   const initial = await fetchRawFileAt(info);
   if (!initial || !shouldRetryResolvedRef(info, initial.error)) return initial;
 
-  const resolved = await resolveGitHubRef(info);
+  const resolved = await resolveGitHubInfo(info);
   if (isSameRefTarget(resolved, info)) return initial;
 
   return await fetchRawFileAt(resolved) || initial;
@@ -355,7 +366,7 @@ export async function cloneRepo(info: GitHubUrlInfo): Promise<ClonedRepo | null>
   const initial = await cloneRepoAt(info);
   if (initial || !isAmbiguousGitHubRef(info)) return initial;
 
-  const resolved = await resolveGitHubRef(info);
+  const resolved = await resolveGitHubInfo(info);
   if (isSameRefTarget(resolved, info)) return initial;
 
   return await cloneRepoAt(resolved);
@@ -388,7 +399,7 @@ export interface RepoOverview {
   ref: string;
 }
 
-async function githubApi<T>(path: string, opts: { raw?: boolean } = {}): Promise<T | null> {
+async function githubApi<T>(path: string, opts: { raw?: boolean; maxSize?: number } = {}): Promise<GitHubApiResult<T>> {
   const headers: Record<string, string> = {
     "User-Agent": "pi-searxng/1.0",
     "Accept": opts.raw ? "application/vnd.github.raw" : "application/vnd.github+json",
@@ -397,68 +408,138 @@ async function githubApi<T>(path: string, opts: { raw?: boolean } = {}): Promise
   const token = process.env.GITHUB_TOKEN;
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
+  const maxSize = opts.maxSize ?? MAX_RAW_SIZE;
+
   try {
     const res = await fetch(`${GITHUB_API}${path}`, {
       signal: AbortSignal.timeout(API_TIMEOUT),
       headers
     });
-    if (!res.ok) return null;
-    return opts.raw ? ((await res.text()) as any) : await res.json();
-  } catch {
-    return null;
+    if (!res.ok) {
+      return {
+        data: null,
+        error: `HTTP ${res.status}`,
+        status: res.status
+      };
+    }
+
+    const contentLength = res.headers.get("content-length");
+    if (contentLength && Number(contentLength) > maxSize) {
+      return {
+        data: null,
+        error: "Content too large"
+      };
+    }
+
+    const contentType = res.headers.get("content-type") || "";
+    if (opts.raw && contentType && isBinaryContentType(contentType)) {
+      return {
+        data: null,
+        error: `Unsupported content type: ${formatContentType(contentType)}`
+      };
+    }
+
+    const text = await readTextWithLimit(res, maxSize);
+    return {
+      data: opts.raw ? (text as T) : (JSON.parse(text) as T)
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: err instanceof Error ? err.message : String(err)
+    };
   }
 }
 
-export async function fetchRepoMetadata(info: GitHubUrlInfo): Promise<RepoMetadata | null> {
-  const data = await githubApi<any>(`/repos/${info.owner}/${info.repo}`);
-  if (!data) return null;
+export async function fetchRepoMetadata(info: GitHubUrlInfo): Promise<GitHubApiResult<RepoMetadata>> {
+  const result = await githubApi<any>(`/repos/${info.owner}/${info.repo}`);
+  if (!result.data) {
+    return {
+      data: null,
+      error: result.error,
+      status: result.status
+    };
+  }
+
+  const data = result.data;
   return {
-    name: data.name,
-    fullName: data.full_name,
-    description: data.description,
-    defaultBranch: data.default_branch,
-    stars: data.stargazers_count || 0,
-    language: data.language,
-    topics: data.topics || [],
-    license: data.license?.spdx_id || null,
-    homepage: data.homepage || null,
-    url: data.html_url
+    data: {
+      name: data.name,
+      fullName: data.full_name,
+      description: data.description,
+      defaultBranch: data.default_branch,
+      stars: data.stargazers_count || 0,
+      language: data.language,
+      topics: data.topics || [],
+      license: data.license?.spdx_id || null,
+      homepage: data.homepage || null,
+      url: data.html_url
+    }
   };
 }
 
-export async function fetchReadme(info: GitHubUrlInfo, ref?: string): Promise<string | null> {
+export async function fetchReadme(info: GitHubUrlInfo, ref?: string): Promise<GitHubApiResult<string>> {
   const path = `/repos/${info.owner}/${info.repo}/readme${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
   return await githubApi<string>(path, { raw: true });
 }
 
-export async function fetchTreeContents(info: GitHubUrlInfo, subPath: string = "", ref?: string): Promise<TreeEntry[] | null> {
+export async function fetchTreeContents(info: GitHubUrlInfo, subPath: string = "", ref?: string): Promise<GitHubApiResult<TreeEntry[]>> {
   const clean = subPath.replace(/^\/+|\/+$/g, "");
   const path = `/repos/${info.owner}/${info.repo}/contents/${clean}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
-  const data = await githubApi<any>(path);
-  if (!Array.isArray(data)) return null;
-  return data.map((item: any) => ({
-    path: item.path,
-    name: item.name,
-    type: item.type === "dir" ? "dir" : "file",
-    size: item.size
-  }));
-}
-
-export async function describeRepo(info: GitHubUrlInfo): Promise<RepoOverview | null> {
-  const metadata = await fetchRepoMetadata(info);
-  if (!metadata) return null;
-
-  const ref = info.ref || metadata.defaultBranch;
-  const [readme, entries] = await Promise.all([
-    fetchReadme(info, ref),
-    fetchTreeContents(info, "", ref)
-  ]);
+  const result = await githubApi<any>(path);
+  if (!result.data) {
+    return {
+      data: null,
+      error: result.error,
+      status: result.status
+    };
+  }
+  if (!Array.isArray(result.data)) {
+    return {
+      data: null,
+      error: "Unexpected GitHub API response"
+    };
+  }
 
   return {
-    metadata,
-    readme,
-    entries: entries || [],
-    ref
+    data: result.data.map((item: any) => ({
+      path: item.path,
+      name: item.name,
+      type: item.type === "dir" ? "dir" : "file",
+      size: item.size
+    }))
+  };
+}
+
+export async function describeRepo(info: GitHubUrlInfo): Promise<GitHubApiResult<RepoOverview>> {
+  const [metadataResult, readmeResult, entriesResult] = await Promise.all([
+    fetchRepoMetadata(info),
+    fetchReadme(info, info.ref),
+    fetchTreeContents(info, "", info.ref)
+  ]);
+
+  if (!metadataResult.data) {
+    return {
+      data: null,
+      error: metadataResult.error,
+      status: metadataResult.status
+    };
+  }
+  if (!entriesResult.data) {
+    return {
+      data: null,
+      error: entriesResult.error || "Failed to fetch repository contents",
+      status: entriesResult.status
+    };
+  }
+
+  return {
+    data: {
+      metadata: metadataResult.data,
+      readme: readmeResult.data,
+      entries: entriesResult.data,
+      ref: info.ref || metadataResult.data.defaultBranch
+    }
   };
 }
 

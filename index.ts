@@ -6,6 +6,7 @@ import { fetchContent } from "./extract.js";
 import {
   isGitHubUrl,
   parseGitHubUrl,
+  resolveGitHubInfo,
   fetchRawFile,
   cloneRepo,
   describeRepo,
@@ -165,28 +166,32 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (ghInfo?.type === "tree" && ghInfo.filePath) {
-        const entries = await fetchTreeContents(ghInfo, ghInfo.filePath, ghInfo.ref);
-        if (!entries) {
+        const resolved = await resolveGitHubInfo(ghInfo);
+        const tree = await fetchTreeContents(resolved, resolved.filePath!, resolved.ref);
+        if (!tree.data) {
           return {
-            content: [{ type: "text", text: `Failed to list \`${ghInfo.filePath}\` in ${ghInfo.owner}/${ghInfo.repo}` }],
-            details: { error: "Tree fetch failed" }
+            content: [{ type: "text", text: `Failed to list \`${resolved.filePath}\` in ${resolved.owner}/${resolved.repo}: ${tree.error || "Unknown error"}` }],
+            details: { error: tree.error || "Tree fetch failed" }
           };
         }
-        const header = `## ${ghInfo.owner}/${ghInfo.repo}/${ghInfo.filePath} @ \`${ghInfo.ref}\``;
+        const header = `## ${resolved.owner}/${resolved.repo}/${resolved.filePath} @ \`${resolved.ref || "HEAD"}\``;
+        const { text, truncated } = truncate(`${header}\n\n${formatTreeEntries(tree.data)}`);
         return {
-          content: [{ type: "text", text: `${header}\n\n${formatTreeEntries(entries)}` }],
-          details: { path: ghInfo.filePath, entryCount: entries.length }
+          content: [{ type: "text", text }],
+          details: { path: resolved.filePath, entryCount: tree.data.length, truncated }
         };
       }
 
       if (ghInfo) {
-        const overview = await describeRepo(ghInfo);
-        if (!overview) {
+        const resolved = await resolveGitHubInfo(ghInfo);
+        const overviewResult = await describeRepo(resolved);
+        if (!overviewResult.data) {
           return {
-            content: [{ type: "text", text: `Failed to fetch repo metadata for ${ghInfo.owner}/${ghInfo.repo}` }],
-            details: { error: "Repo describe failed" }
+            content: [{ type: "text", text: `Failed to fetch repository overview for ${resolved.owner}/${resolved.repo}: ${overviewResult.error || "Unknown error"}` }],
+            details: { error: overviewResult.error || "Repo describe failed" }
           };
         }
+        const overview = overviewResult.data;
         const { text, truncated } = truncate(formatRepoOverview(overview));
         return {
           content: [{ type: "text", text }],
@@ -236,10 +241,10 @@ export default function (pi: ExtensionAPI) {
     renderResult(result, _opts, theme) {
       const details = result.details as any;
       if (details?.repo) {
-        return new Text(theme.fg("success", details.repo) + theme.fg("muted", ` @ ${details.ref}`), 0, 0);
+        return new Text(theme.fg("success", details.repo) + theme.fg("muted", ` @ ${details.ref}`) + (details?.truncated ? theme.fg("warning", " [truncated]") : ""), 0, 0);
       }
       if (details?.entryCount !== undefined && details?.path) {
-        return new Text(theme.fg("success", `${details.entryCount} entries`), 0, 0);
+        return new Text(theme.fg("success", `${details.entryCount} entries`) + (details?.truncated ? theme.fg("warning", " [truncated]") : ""), 0, 0);
       }
       if (details?.path) {
         return new Text(theme.fg("success", details.path) + (details?.truncated ? theme.fg("warning", " [truncated]") : ""), 0, 0);
