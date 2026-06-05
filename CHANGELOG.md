@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tsconfig.json` (strict mode + `noUncheckedIndexedAccess`) and a `typecheck` npm script.
 
 ### Changed
+- Migrated peer dependencies from the deprecated `@mariozechner/*` scope to `@earendil-works/*` (`pi-coding-agent`, `pi-tui`), matching the current Pi runtime (0.78.x).
 - Shared HTTP utility (`http.ts`) for size-limited fetching and content-type handling, used by both the generic fetch and GitHub paths.
 - Internal cleanup: consolidated tool-result builders, typed the search cache (now backed by `lru-cache`), and made tool result details fully typed end to end.
 

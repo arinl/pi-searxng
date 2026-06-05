@@ -1,5 +1,5 @@
-import type { ExtensionAPI, AgentToolResult } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { LRUCache } from "lru-cache";
 import { search, type SearchResult } from "./searxng.js";
