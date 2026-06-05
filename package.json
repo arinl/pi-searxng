@@ -1,6 +1,6 @@
 {
   "name": "pi-searxng",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "SearXNG web search and HTML-to-markdown fetch extension for Pi",
   "type": "module",
   "keywords": [

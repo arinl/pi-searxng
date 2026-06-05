@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-06-05
 
 ### Added
 - GitHub URL resolution in `fetch_content`, reintroduced API-first (no repo cloning, no `git` dependency): `…/blob/<ref>/<file>` is fetched from `raw.githubusercontent.com`, directories and repo roots via the GitHub API, and private repos via the `gh` CLI when installed and authenticated. Issues, PRs, wikis, and discussions fall through to the generic Readability path. Branch/tag names containing slashes (e.g. `release/8.0`) are disambiguated automatically, and the resolved source (raw URL or `gh` command) is surfaced in the tool result.
