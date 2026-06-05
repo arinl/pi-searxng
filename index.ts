@@ -88,7 +88,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "fetch_content",
     label: "Fetch Content",
-    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). Use headingsOnly to scout long pages. NEVER use this tool for GitHub URLs (repo trees, files, issues, PRs, workflows). Always use the gh CLI via bash instead.",
+    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). Use headingsOnly to scout long pages. Always use the gh CLI (GitHub CLI) for GitHub URLs (repo trees, files, issues, PRs, workflows).",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       headingsOnly: Type.Optional(Type.Boolean({ description: "Return only headings (useful for scouting long pages)", default: false }))
