@@ -3,6 +3,7 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { search } from "./searxng.js";
 import { fetchContent } from "./extract.js";
+import { isGitHubUrl, fetchGitHub } from "./github.js";
 
 const SEARCH_CACHE_MAX = 20;
 const TRUNCATE_LIMIT = 30000;
@@ -88,7 +89,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "fetch_content",
     label: "Fetch Content",
-    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). Use headingsOnly to scout long pages. Always use the gh CLI via bash for GitHub URLs.",
+    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). GitHub file, directory, and repo URLs are resolved to their content automatically. Use headingsOnly to scout long pages.",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       headingsOnly: Type.Optional(Type.Boolean({ description: "Return only headings (useful for scouting long pages)", default: false }))
@@ -97,6 +98,21 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Aborted" }] };
+      }
+
+      if (isGitHubUrl(params.url)) {
+        const gh = await fetchGitHub(params.url, { headingsOnly: params.headingsOnly });
+        if (gh) {
+          if (gh.error) {
+            return { content: [{ type: "text", text: `Error: ${gh.error}` }], details: { error: gh.error, via: gh.via } };
+          }
+          const { text, truncated } = truncate(gh.content);
+          return {
+            content: [{ type: "text", text }],
+            details: { title: gh.title, url: gh.url, via: gh.via, command: gh.command, truncated, length: gh.content.length }
+          };
+        }
+        // gh === null → not a content URL (issue/PR/wiki/etc.), fall through to generic fetch
       }
 
       const result = await fetchContent(params.url, { headingsOnly: params.headingsOnly });
@@ -129,8 +145,13 @@ export default function (pi: ExtensionAPI) {
 
     renderResult(result, _opts, theme) {
       const details = result.details as any;
+      if (details?.via === "redirect") {
+        return new Text(theme.fg("warning", "needs gh or git"), 0, 0);
+      }
       const length = details?.length || 0;
-      return new Text(theme.fg("success", `${length} chars`) + (details?.truncated ? theme.fg("warning", " [truncated]") : ""), 0, 0);
+      const cmd = details?.command ? (details.command.length > 60 ? details.command.slice(0, 57) + "..." : details.command) : "";
+      const via = details?.via ? theme.fg("muted", ` via ${cmd || details.via}`) : "";
+      return new Text(theme.fg("success", `${length} chars`) + (details?.truncated ? theme.fg("warning", " [truncated]") : "") + via, 0, 0);
     }
   });
 
