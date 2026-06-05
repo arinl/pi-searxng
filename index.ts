@@ -153,7 +153,10 @@ export default function (pi: ExtensionAPI) {
         return new Text(theme.fg("warning", "needs gh or git"), 0, 0);
       }
       const length = details.length || 0;
-      const cmd = details.command ? (details.command.length > 60 ? details.command.slice(0, 57) + "..." : details.command) : "";
+      // Drop the `-H "Accept: ..."` tail — it's a constant implementation detail,
+      // noisy in the transcript (details.command keeps the full reproducible form).
+      const shown = (details.command || "").replace(/ -H ".*/, "");
+      const cmd = shown.length > 60 ? shown.slice(0, 57) + "..." : shown;
       const via = details.via ? theme.fg("muted", ` via ${cmd || details.via}`) : "";
       return new Text(theme.fg("success", `${length} chars`) + (details.truncated ? theme.fg("warning", " [truncated]") : "") + via, 0, 0);
     }
