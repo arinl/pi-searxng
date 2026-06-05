@@ -89,7 +89,7 @@ export default function (pi: ExtensionAPI) {
     name: "fetch_content",
     label: "Fetch Content",
 <<<<<<< HEAD
-    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). Use headingsOnly to scout long pages. Always use the gh CLI via bash for GitHub URLs."
+    description: "Fetch a URL and return its content as markdown (HTML pages are converted via Readability). Use headingsOnly to scout long pages. Always use the gh CLI via bash for GitHub URLs.",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       headingsOnly: Type.Optional(Type.Boolean({ description: "Return only headings (useful for scouting long pages)", default: false }))
