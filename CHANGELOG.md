@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- GitHub URL resolution in `fetch_content`, reintroduced API-first (no repo cloning, no `git` dependency): `…/blob/<ref>/<file>` is fetched from `raw.githubusercontent.com`, directories and repo roots via the GitHub API, and private repos via the `gh` CLI when installed and authenticated. Issues, PRs, wikis, and discussions fall through to the generic Readability path. Branch/tag names containing slashes (e.g. `release/8.0`) are disambiguated automatically, and the resolved source (raw URL or `gh` command) is surfaced in the tool result.
+- Authenticated `gh`, when available, is preferred for directory/repo fetches (5000 req/hr) over the unauthenticated GitHub API (60 req/hr). When a private resource can't be reached without `gh`, the tool returns the exact `gh`/`git` command to run in your shell.
+- `tsconfig.json` (strict mode + `noUncheckedIndexedAccess`) and a `typecheck` npm script.
+
+### Changed
+- Shared HTTP utility (`http.ts`) for size-limited fetching and content-type handling, used by both the generic fetch and GitHub paths.
+- Internal cleanup: consolidated tool-result builders, typed the search cache (now backed by `lru-cache`), and made tool result details fully typed end to end.
+
 ## [2.0.0] - 2026-04-25
 
 ### Removed (BREAKING)
