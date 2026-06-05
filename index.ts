@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, AgentToolResult } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { LRUCache } from "lru-cache";
@@ -9,16 +9,22 @@ import { isGitHubUrl, fetchGitHub } from "./github.js";
 const SEARCH_CACHE_MAX = 20;
 const TRUNCATE_LIMIT = 30000;
 
-type Details = Record<string, unknown>;
-
-// Subset of detail fields the render callbacks read back off a result.
-interface RenderDetails {
+// Every detail field surfaced across the three tools (for logs / render callbacks).
+// All optional, so any single result populates only the relevant subset.
+interface ToolDetails {
+  searchId?: string;
+  resultCount?: number;
+  query?: string;
+  title?: string;
+  url?: string;
   via?: string;
   command?: string;
-  length?: number;
   truncated?: boolean;
-  resultCount?: number;
+  length?: number;
+  error?: string;
 }
+
+type ToolResult = AgentToolResult<ToolDetails>;
 
 const searchCache = new LRUCache<string, { query: string; results: SearchResult[] }>({
   max: SEARCH_CACHE_MAX
@@ -33,18 +39,19 @@ function truncate(text: string, max = TRUNCATE_LIMIT): { text: string; truncated
   return { text: text.slice(0, max) + "\n\n[Content truncated...]", truncated: true };
 }
 
-// Shared tool-result builders. Every tool returns the same { content, details } shape.
-function textResult(text: string, details?: Details) {
-  return { content: [{ type: "text" as const, text }], details };
+// Shared tool-result builders. The ToolResult return type lets registerTool
+// infer TDetails, so result.details is fully typed in the render callbacks.
+function textResult(text: string, details: ToolDetails = {}): ToolResult {
+  return { content: [{ type: "text", text }], details };
 }
 
-function errorResult(err: unknown, extra?: Details) {
+function errorResult(err: unknown, extra?: ToolDetails): ToolResult {
   const message = err instanceof Error ? err.message : String(err);
   return textResult(`Error: ${message}`, { error: message, ...extra });
 }
 
 // Truncate long content and record its size alongside the caller's details.
-function contentResult(content: string, details: Details) {
+function contentResult(content: string, details: ToolDetails): ToolResult {
   const { text, truncated } = truncate(content);
   return textResult(text, { ...details, truncated, length: content.length });
 }
@@ -102,7 +109,7 @@ export default function (pi: ExtensionAPI) {
     },
 
     renderResult(result, _opts, theme) {
-      const count = (result.details as RenderDetails | undefined)?.resultCount || 0;
+      const count = result.details.resultCount || 0;
       return new Text(theme.fg("success", `${count} results`), 0, 0);
     }
   });
@@ -141,14 +148,14 @@ export default function (pi: ExtensionAPI) {
     },
 
     renderResult(result, _opts, theme) {
-      const details = result.details as RenderDetails | undefined;
-      if (details?.via === "redirect") {
+      const details = result.details;
+      if (details.via === "redirect") {
         return new Text(theme.fg("warning", "needs gh or git"), 0, 0);
       }
-      const length = details?.length || 0;
-      const cmd = details?.command ? (details.command.length > 60 ? details.command.slice(0, 57) + "..." : details.command) : "";
-      const via = details?.via ? theme.fg("muted", ` via ${cmd || details.via}`) : "";
-      return new Text(theme.fg("success", `${length} chars`) + (details?.truncated ? theme.fg("warning", " [truncated]") : "") + via, 0, 0);
+      const length = details.length || 0;
+      const cmd = details.command ? (details.command.length > 60 ? details.command.slice(0, 57) + "..." : details.command) : "";
+      const via = details.via ? theme.fg("muted", ` via ${cmd || details.via}`) : "";
+      return new Text(theme.fg("success", `${length} chars`) + (details.truncated ? theme.fg("warning", " [truncated]") : "") + via, 0, 0);
     }
   });
 
