@@ -156,6 +156,19 @@ function runGh(args: string[]): Promise<GhResult> {
   });
 }
 
+// Memoized one-time check: is gh installed AND authenticated? Used only to
+// decide ordering for the API-backed cases (tree/root) — authenticated gh gets
+// 5000 req/hr vs 60/hr unauthenticated. Blob fetches stay raw-first regardless.
+let ghUsableCache: Promise<boolean> | undefined;
+function ghUsable(): Promise<boolean> {
+  if (!ghUsableCache) {
+    ghUsableCache = new Promise(resolve => {
+      execFile("gh", ["auth", "status"], { timeout: TIMEOUT }, err => resolve(!err));
+    });
+  }
+  return ghUsableCache;
+}
+
 function redirect(url: string, info: GitHubUrlInfo, why: "notInstalled" | "notAuthed"): GitHubResult {
   const reason = why === "notInstalled"
     ? "the `gh` CLI is not installed"
@@ -229,22 +242,20 @@ async function fetchBlob(url: string, info: GitHubUrlInfo, headingsOnly: boolean
   return { url, title: "", content: "", error: "File not found on GitHub.", via: "gh" };
 }
 
-async function fetchTree(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
+async function apiTree(url: string, info: GitHubUrlInfo): Promise<GitHubResult | null> {
   for (const c of refCandidates(info)) {
     const path = c.filePath ? `/${c.filePath}` : "";
     const apiPath = `repos/${info.owner}/${info.repo}/contents${path}?ref=${encodeRef(c.ref)}`;
     const r = await safeGet(`${API_HOST}/${apiPath}`, { Accept: "application/vnd.github+json" });
     if (r.status === 200) {
-      return {
-        url,
-        title: `${info.owner}/${info.repo}${path}`,
-        content: formatTree(r.body),
-        via: "api",
-        command: `${API_HOST}/${apiPath}`
-      };
+      return { url, title: `${info.owner}/${info.repo}${path}`, content: formatTree(r.body), via: "api", command: `${API_HOST}/${apiPath}` };
     }
-    if (r.status === 403) break; // rate limited — try authenticated gh
+    if (r.status === 403) break; // rate limited
   }
+  return null;
+}
+
+async function ghTree(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
   for (const c of refCandidates(info)) {
     const path = c.filePath ? `/${c.filePath}` : "";
     const apiPath = `repos/${info.owner}/${info.repo}/contents${path}?ref=${encodeRef(c.ref)}`;
@@ -252,38 +263,42 @@ async function fetchTree(url: string, info: GitHubUrlInfo): Promise<GitHubResult
     if (gh.notInstalled) return redirect(url, info, "notInstalled");
     if (gh.notAuthed) return redirect(url, info, "notAuthed");
     if (gh.ok) {
-      return {
-        url,
-        title: `${info.owner}/${info.repo}${path}`,
-        content: formatTree(gh.stdout),
-        via: "gh",
-        command: `gh api ${apiPath}`
-      };
+      return { url, title: `${info.owner}/${info.repo}${path}`, content: formatTree(gh.stdout), via: "gh", command: `gh api ${apiPath}` };
     }
   }
   return { url, title: "", content: "", error: "Directory not found on GitHub.", via: "gh" };
 }
 
-async function fetchRoot(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
+// Prefer authenticated gh when available (higher rate limit); otherwise hit the
+// unauthenticated API and fall back to gh (which yields the redirect) on failure.
+async function fetchTree(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
+  if (await ghUsable()) return ghTree(url, info);
+  return (await apiTree(url, info)) ?? ghTree(url, info);
+}
+
+async function apiRoot(url: string, info: GitHubUrlInfo): Promise<GitHubResult | null> {
   const apiPath = `repos/${info.owner}/${info.repo}/readme`;
   const r = await safeGet(`${API_HOST}/${apiPath}`, { Accept: "application/vnd.github.raw" });
   if (r.status === 200) {
     return { url, title: `${info.owner}/${info.repo}`, content: r.body, via: "api", command: `${API_HOST}/${apiPath}` };
   }
-  // 404 (private or no README), 403 (rate limited), or network error — try gh.
+  return null;
+}
+
+async function ghRoot(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
+  const apiPath = `repos/${info.owner}/${info.repo}/readme`;
   const gh = await runGh(["api", apiPath, "-H", "Accept: application/vnd.github.raw"]);
   if (gh.notInstalled) return redirect(url, info, "notInstalled");
   if (gh.notAuthed) return redirect(url, info, "notAuthed");
   if (gh.ok) {
-    return {
-      url,
-      title: `${info.owner}/${info.repo}`,
-      content: gh.stdout,
-      via: "gh",
-      command: `gh api ${apiPath} -H "Accept: application/vnd.github.raw"`
-    };
+    return { url, title: `${info.owner}/${info.repo}`, content: gh.stdout, via: "gh", command: `gh api ${apiPath} -H "Accept: application/vnd.github.raw"` };
   }
   return { url, title: "", content: "", error: "No README found for this repository.", via: "gh" };
+}
+
+async function fetchRoot(url: string, info: GitHubUrlInfo): Promise<GitHubResult> {
+  if (await ghUsable()) return ghRoot(url, info);
+  return (await apiRoot(url, info)) ?? ghRoot(url, info);
 }
 
 // Returns null when the URL should fall through to the generic HTML fetch
