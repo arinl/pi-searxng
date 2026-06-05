@@ -2,6 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
+import { MAX_SIZE, formatContentType, isHtmlContentType, isTextLikeContentType, readTextWithLimit } from "./http.js";
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -9,7 +10,6 @@ const turndown = new TurndownService({
 });
 
 const DEFAULT_TIMEOUT = 30000;
-const MAX_SIZE = 5 * 1024 * 1024;
 
 type CacheMode = "full" | "headings";
 type CachePayload = Partial<Record<CacheMode, ExtractedContent>>;
@@ -25,58 +25,6 @@ function getCached(url: string, mode: CacheMode): ExtractedContent | null {
 
 function setCache(url: string, payload: CachePayload): void {
   urlCache.set(url, { ...(urlCache.get(url) || {}), ...payload });
-}
-
-function isTextLikeContentType(contentType: string): boolean {
-  if (!contentType) return true;
-
-  const normalized = contentType.toLowerCase();
-  return normalized.startsWith("text/") ||
-    normalized.includes("html") ||
-    normalized.includes("json") ||
-    normalized.includes("xml") ||
-    normalized.includes("javascript");
-}
-
-function formatContentType(contentType: string): string {
-  return contentType.split(";")[0] || "unknown";
-}
-
-function isHtmlContentType(contentType: string): boolean {
-  const normalized = formatContentType(contentType).toLowerCase();
-  return normalized === "text/html" || normalized === "application/xhtml+xml";
-}
-
-async function readTextWithLimit(res: Response, limit: number): Promise<string> {
-  if (!res.body) {
-    const text = await res.text();
-    if (new TextEncoder().encode(text).length > limit) {
-      throw new Error("Content too large");
-    }
-    return text;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-  let size = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      throw new Error("Content too large");
-    }
-
-    chunks.push(decoder.decode(value, { stream: true }));
-  }
-
-  chunks.push(decoder.decode());
-  return chunks.join("");
 }
 
 function extractDomHeadings(root: Document | Element | null): string {

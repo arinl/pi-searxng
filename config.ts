@@ -21,12 +21,14 @@ export function loadConfig(): Config {
     maxResults: 10
   };
 
+  let config: Config;
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-    cached = { ...defaults, ...raw };
+    config = { ...defaults, ...raw };
   } catch {
-    cached = defaults;
+    config = defaults;
   }
 
-  return cached;
+  cached = config;
+  return config;
 }

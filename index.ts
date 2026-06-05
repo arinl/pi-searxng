@@ -1,14 +1,28 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { search } from "./searxng.js";
+import { LRUCache } from "lru-cache";
+import { search, type SearchResult } from "./searxng.js";
 import { fetchContent } from "./extract.js";
 import { isGitHubUrl, fetchGitHub } from "./github.js";
 
 const SEARCH_CACHE_MAX = 20;
 const TRUNCATE_LIMIT = 30000;
 
-const searchCache = new Map<string, { query: string; results: any[] }>();
+type Details = Record<string, unknown>;
+
+// Subset of detail fields the render callbacks read back off a result.
+interface RenderDetails {
+  via?: string;
+  command?: string;
+  length?: number;
+  truncated?: boolean;
+  resultCount?: number;
+}
+
+const searchCache = new LRUCache<string, { query: string; results: SearchResult[] }>({
+  max: SEARCH_CACHE_MAX
+});
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -19,7 +33,23 @@ function truncate(text: string, max = TRUNCATE_LIMIT): { text: string; truncated
   return { text: text.slice(0, max) + "\n\n[Content truncated...]", truncated: true };
 }
 
-function formatSearchResults(results: any[]): string {
+// Shared tool-result builders. Every tool returns the same { content, details } shape.
+function textResult(text: string, details?: Details) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+
+function errorResult(err: unknown, extra?: Details) {
+  const message = err instanceof Error ? err.message : String(err);
+  return textResult(`Error: ${message}`, { error: message, ...extra });
+}
+
+// Truncate long content and record its size alongside the caller's details.
+function contentResult(content: string, details: Details) {
+  const { text, truncated } = truncate(content);
+  return textResult(text, { ...details, truncated, length: content.length });
+}
+
+function formatSearchResults(results: SearchResult[]): string {
   if (results.length === 0) return "No results found.";
   return results.map((r, i) => {
     const score = r.score ? ` (${r.score.toFixed(2)})` : "";
@@ -48,40 +78,31 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      if (signal?.aborted) {
-        return { content: [{ type: "text", text: "Aborted" }] };
-      }
+      if (signal?.aborted) return textResult("Aborted");
 
       try {
         const { results } = await search(params.query, params);
         const searchId = generateId();
-
-        if (searchCache.size >= SEARCH_CACHE_MAX) {
-          const oldest = searchCache.keys().next().value!;
-          searchCache.delete(oldest);
-        }
         searchCache.set(searchId, { query: params.query, results });
 
-        return {
-          content: [{ type: "text", text: formatSearchResults(results) }],
-          details: { searchId, resultCount: results.length, query: params.query }
-        };
+        return textResult(formatSearchResults(results), {
+          searchId,
+          resultCount: results.length,
+          query: params.query
+        });
       } catch (err) {
-        return {
-          content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          details: { error: String(err) }
-        };
+        return errorResult(err);
       }
     },
 
     renderCall(args, theme) {
-      const q = (args as any).query || "";
+      const q = args.query || "";
       const display = q.length > 50 ? q.slice(0, 47) + "..." : q;
       return new Text(theme.fg("toolTitle", "search ") + theme.fg("accent", `"${display}"`), 0, 0);
     },
 
     renderResult(result, _opts, theme) {
-      const count = (result.details as any)?.resultCount || 0;
+      const count = (result.details as RenderDetails | undefined)?.resultCount || 0;
       return new Text(theme.fg("success", `${count} results`), 0, 0);
     }
   });
@@ -96,55 +117,31 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(_id, params, signal) {
-      if (signal?.aborted) {
-        return { content: [{ type: "text", text: "Aborted" }] };
-      }
+      if (signal?.aborted) return textResult("Aborted");
 
       if (isGitHubUrl(params.url)) {
         const gh = await fetchGitHub(params.url, { headingsOnly: params.headingsOnly });
         if (gh) {
-          if (gh.error) {
-            return { content: [{ type: "text", text: `Error: ${gh.error}` }], details: { error: gh.error, via: gh.via } };
-          }
-          const { text, truncated } = truncate(gh.content);
-          return {
-            content: [{ type: "text", text }],
-            details: { title: gh.title, url: gh.url, via: gh.via, command: gh.command, truncated, length: gh.content.length }
-          };
+          if (gh.error) return errorResult(gh.error, { via: gh.via });
+          return contentResult(gh.content, { title: gh.title, url: gh.url, via: gh.via, command: gh.command });
         }
         // gh === null → not a content URL (issue/PR/wiki/etc.), fall through to generic fetch
       }
 
       const result = await fetchContent(params.url, { headingsOnly: params.headingsOnly });
+      if (result.error) return errorResult(result.error);
 
-      if (result.error) {
-        return {
-          content: [{ type: "text", text: `Error: ${result.error}` }],
-          details: { error: result.error }
-        };
-      }
-
-      const { text, truncated } = truncate(result.content);
-
-      return {
-        content: [{ type: "text", text }],
-        details: {
-          title: result.title,
-          url: result.url,
-          truncated,
-          length: result.content.length
-        }
-      };
+      return contentResult(result.content, { title: result.title, url: result.url });
     },
 
     renderCall(args, theme) {
-      const url = (args as any).url || "";
+      const url = args.url || "";
       const display = url.length > 50 ? url.slice(0, 47) + "..." : url;
       return new Text(theme.fg("toolTitle", "fetch ") + theme.fg("accent", display), 0, 0);
     },
 
     renderResult(result, _opts, theme) {
-      const details = result.details as any;
+      const details = result.details as RenderDetails | undefined;
       if (details?.via === "redirect") {
         return new Text(theme.fg("warning", "needs gh or git"), 0, 0);
       }
@@ -165,12 +162,8 @@ export default function (pi: ExtensionAPI) {
 
     async execute(_id, params) {
       const cached = searchCache.get(params.searchId);
-      if (!cached) {
-        return { content: [{ type: "text", text: "Search not found" }] };
-      }
-      return {
-        content: [{ type: "text", text: `Query: "${cached.query}"\n\n${formatSearchResults(cached.results)}` }]
-      };
+      if (!cached) return textResult("Search not found");
+      return textResult(`Query: "${cached.query}"\n\n${formatSearchResults(cached.results)}`);
     }
   });
 }

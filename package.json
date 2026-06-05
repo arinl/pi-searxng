@@ -20,6 +20,7 @@
     "config.ts",
     "extract.ts",
     "github.ts",
+    "http.ts",
     "package.json",
     "README.md"
   ],
@@ -38,5 +39,12 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@types/turndown": "^5.0.6",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
   }
 }

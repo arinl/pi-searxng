@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process";
 import { extractHeadings } from "./extract.js";
+import { MAX_SIZE, fetchText } from "./http.js";
 
 const TIMEOUT = 15000;
-const MAX_SIZE = 5 * 1024 * 1024;
 const RAW_HOST = "https://raw.githubusercontent.com";
 const API_HOST = "https://api.github.com";
-const UA = "pi-searxng-fetch";
 
 export interface GitHubResult {
   url: string;
@@ -43,14 +42,13 @@ function parseGitHubUrl(url: string): GitHubUrlInfo | null {
   if (parsed.hostname !== "github.com") return null;
 
   const segments = parsed.pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
+  const [owner, rawRepo, marker] = segments;
+  if (!owner || !rawRepo) return null;
 
-  const owner = segments[0];
-  const repo = segments[1].replace(/\.git$/, "");
+  const repo = rawRepo.replace(/\.git$/, "");
 
   if (segments.length === 2) return { owner, repo, kind: "root" };
 
-  const marker = segments[2];
   if (marker === "blob" || marker === "tree") {
     const refPathSegments = segments.slice(3);
     return {
@@ -79,8 +77,9 @@ function refCandidates(info: GitHubUrlInfo): Array<{ ref: string; filePath?: str
   if (!segs || segs.length === 0) {
     return info.ref ? [{ ref: info.ref, filePath: info.filePath }] : [];
   }
-  if (segs.length === 1 || isCommitSha(segs[0])) {
-    return [{ ref: segs[0], filePath: segs.slice(1).join("/") || undefined }];
+  const first = segs[0];
+  if (first !== undefined && (segs.length === 1 || isCommitSha(first))) {
+    return [{ ref: first, filePath: segs.slice(1).join("/") || undefined }];
   }
   const max = info.kind === "blob" ? segs.length - 1 : segs.length;
   const candidates: Array<{ ref: string; filePath?: string }> = [];
@@ -98,39 +97,11 @@ function encodeRef(ref: string): string {
   return encodeURIComponent(ref).replace(/%2F/gi, "/");
 }
 
-async function readTextWithLimit(res: Response, limit = MAX_SIZE): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const text = await res.text();
-    if (new TextEncoder().encode(text).length > limit) throw new Error("Content too large");
-    return text;
-  }
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-  let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      throw new Error("Content too large");
-    }
-    chunks.push(decoder.decode(value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
+// Like fetchText but never throws — network errors / timeouts surface as status 0
+// so callers can fall through to the gh path.
 async function safeGet(url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(TIMEOUT),
-      headers: { "User-Agent": UA, ...headers }
-    });
-    if (!res.ok) return { status: res.status, body: "" };
-    return { status: 200, body: await readTextWithLimit(res) };
+    return await fetchText(url, { headers, timeout: TIMEOUT });
   } catch {
     return { status: 0, body: "" };
   }
